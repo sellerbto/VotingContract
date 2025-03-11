@@ -7,8 +7,9 @@ import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
-contract VoteTable is AccessControl, ERC721URIStorage {
+contract VoteTable is AccessControl, ERC721URIStorage, IERC721Receiver {
     using SafeERC20 for IERC20;
 
     enum VotingResult {
@@ -18,7 +19,6 @@ contract VoteTable is AccessControl, ERC721URIStorage {
     }
 
     struct Voting {
-        uint256 id;
         string description;
         uint256 powerVotedFor;
         uint256 powerVotedAgainst;
@@ -58,9 +58,11 @@ contract VoteTable is AccessControl, ERC721URIStorage {
         require(votingDuration > 0, "End time must be in the future");
         require(votingThreshold > 0, "Voting threshold must be greater than 0");
         require(bytes(description).length > 0, "Description must be non-empty");
+        require(bytes(description).length < 500, "Description must be less than 500 characters");
+
+        // Does i need to check votingThreshold is less than some value or it is an admin fault if he sets it to max value?
 
         votings[votingCount] = Voting({
-            id: votingCount,
             description: description,
             powerVotedFor: 0,
             powerVotedAgainst: 0,
@@ -98,6 +100,95 @@ contract VoteTable is AccessControl, ERC721URIStorage {
         _mintResultNFT(votingId);
     }
 
+    function pledge(
+        uint256 votingId,
+        uint256 amount,
+        uint32 stakeDuration,
+        bool isFor
+    ) external {
+        require(votingId < votingCount, "Invalid voting id");
+        require(amount > 0, "Amount must be greater than 0");
+        require(stakeDuration > 0, "Stake duration must be greater than 0");
+        require(
+            stakeDuration <= 365 days * 4,
+            "Stake duration must be less than 4 years"
+        );
+
+        Voting storage voting = votings[votingId];
+        require(voting.isActive, "Voting is not active");
+        require(voting.endTime >= block.timestamp, "Voting has ended");
+
+        require(
+            token.balanceOf(msg.sender) >= amount,
+            "Insufficient token balance"
+        );
+        require(
+            token.allowance(msg.sender, address(this)) >= amount,
+            "Insufficient token allowance"
+        );
+
+        token.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 votingPower = _getVotingPower(amount, stakeDuration);
+
+        if (isFor) {
+            voting.powerVotedFor += votingPower;
+        } else {
+            voting.powerVotedAgainst += votingPower;
+        }
+
+        votes[votingId][msg.sender][voteCount] = Vote({
+            stakedAmount: amount,
+            votingPower: votingPower,
+            isFor: isFor,
+            stakeEndTime: uint32(block.timestamp + stakeDuration),
+            isValue: true
+        });
+
+        voteCount++;
+
+        _checkAndFinalizeByThreshold(votingId);
+    }
+
+    function unpledge(uint256 votingId, uint voteId) external {
+        require(votingId < votingCount, "Invalid voting id");
+        Vote storage vote = votes[votingId][msg.sender][voteId];
+        require(vote.isValue, "Vote does not exist");
+        require(block.timestamp >= vote.stakeEndTime, "Stake is not over");
+
+        uint256 amountToReturn = vote.stakedAmount;
+
+        Voting storage voting = votings[votingId];
+        if (voting.isActive) {
+            if (vote.isFor) {
+                voting.powerVotedFor -= vote.votingPower;
+            } else {
+                voting.powerVotedAgainst -= vote.votingPower;
+            }
+        }
+
+        // Mark the vote as unstaked instead of deleting it
+        vote.stakedAmount = 0;
+        vote.votingPower = 0;
+        // Keep isFor, stakeEndTime, and isValue for historical record
+
+        token.safeTransfer(msg.sender, amountToReturn);
+    }
+
+    function _checkAndFinalizeByThreshold(uint256 votingId) internal {
+        Voting storage voting = votings[votingId];
+        if (!voting.isActive) return;
+
+        if (voting.powerVotedFor >= voting.votingThreshold) {
+            voting.isActive = false;
+            voting.result = VotingResult.Passed;
+            _mintResultNFT(votingId);
+        } else if (voting.powerVotedAgainst >= voting.votingThreshold) {
+            voting.isActive = false;
+            voting.result = VotingResult.Failed;
+            _mintResultNFT(votingId);
+        }
+    }
+
     function _mintResultNFT(uint256 votingId) internal {
         Voting storage voting = votings[votingId];
 
@@ -120,101 +211,15 @@ contract VoteTable is AccessControl, ERC721URIStorage {
         _setTokenURI(votingId, metadata);
     }
 
-    function pledge(
-        uint256 votingId,
-        uint256 amount,
-        uint32 stakeDuration,
-        bool isFor
-    ) external {
-        require(votingId < votingCount, "Invalid voting id");
-        require(
-            token.balanceOf(msg.sender) >= amount,
-            "Insufficient token balance"
-        );
-        require(
-            token.allowance(msg.sender, address(this)) >= amount,
-            "Insufficient token allowance"
-        );
-        require(stakeDuration > 0, "Stake duration must be greater than 0");
-        require(
-            block.timestamp + stakeDuration <= block.timestamp + 365 days * 4,
-            "Stake duration must be less than 4 years"
-        );
-
-        Voting storage voting = votings[votingId];
-        require(voting.isActive, "Voting is not active");
-        require(voting.endTime >= block.timestamp, "Voting has ended");
-
-        uint256 votingPower = getVotingPower(amount, stakeDuration);
-
-        if (isFor) {
-            voting.powerVotedFor += votingPower;
-        } else {
-            voting.powerVotedAgainst += votingPower;
-        }
-
-        _checkAndFinalizeByThreshold(votingId);
-
-        votes[votingId][msg.sender][voteCount] = Vote({
-            stakedAmount: amount,
-            votingPower: votingPower,
-            isFor: isFor,
-            stakeEndTime: uint32(block.timestamp + stakeDuration),
-            isValue: true
-        });
-
-        voteCount++;
-        token.safeTransferFrom(msg.sender, address(this), amount);
-    }
-
-    function _checkAndFinalizeByThreshold(uint256 votingId) internal {
-        Voting storage voting = votings[votingId];
-        if (!voting.isActive) return;
-
-        if (voting.powerVotedFor >= voting.votingThreshold) {
-            voting.isActive = false;
-            voting.result = VotingResult.Passed;
-            _mintResultNFT(votingId);
-        } else if (voting.powerVotedAgainst >= voting.votingThreshold) {
-            voting.isActive = false;
-            voting.result = VotingResult.Failed;
-            _mintResultNFT(votingId);
-        }
-    }
-
-    function unpledge(uint256 votingId, uint voteId) external {
-        require(votingId < votingCount, "Invalid voting id");
-
-        Vote storage vote = votes[votingId][msg.sender][voteId];
-        require(vote.isValue, "Vote does not exist");
-        require(block.timestamp >= vote.stakeEndTime, "Stake is not over");
-
-        Voting storage voting = votings[votingId];
-
-        if (vote.isFor && voting.isActive) {
-            voting.powerVotedFor -= vote.votingPower;
-        } else {
-            voting.powerVotedAgainst -= vote.votingPower;
-        }
-
-        token.safeTransfer(msg.sender, vote.stakedAmount);
-
-        delete votes[votingId][msg.sender][voteId];
-    }
-
-    function getVotingPower(
+    function _getVotingPower(
         uint256 stakeAmount,
         uint32 stakeDuration
-    ) public pure returns (uint256) {
+    ) internal pure returns (uint256) {
         require(
             stakeDuration <= 365 days * 4,
             "Stake period must not be greater than 4 years"
         );
-        return stakeAmount * stakeDuration ** 2;
-    }
-
-    function _burn(uint256 tokenId) internal override {
-        super._burn(tokenId);
+        return stakeAmount * stakeDuration * stakeDuration;
     }
 
     function tokenURI(
@@ -227,5 +232,14 @@ contract VoteTable is AccessControl, ERC721URIStorage {
         bytes4 interfaceId
     ) public view override(ERC721URIStorage, AccessControl) returns (bool) {
         return super.supportsInterface(interfaceId);
+    }
+
+    function onERC721Received(
+        address,
+        address,
+        uint256,
+        bytes calldata
+    ) external pure override returns (bytes4) {
+        return this.onERC721Received.selector;
     }
 }
