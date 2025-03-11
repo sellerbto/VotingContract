@@ -36,6 +36,39 @@ contract VoteTable is AccessControl, ERC721URIStorage, IERC721Receiver {
         bool isValue;
     }
 
+    // Events
+    event VotingCreated(
+        uint256 indexed votingId,
+        string description,
+        uint256 votingThreshold,
+        uint32 endTime,
+        address indexed creator
+    );
+
+    event VotingFinalized(
+        uint256 indexed votingId,
+        uint256 powerVotedFor,
+        uint256 powerVotedAgainst,
+        VotingResult result
+    );
+
+    event VoteCast(
+        uint256 indexed votingId,
+        uint256 indexed voteId,
+        address indexed voter,
+        uint256 stakedAmount,
+        uint256 votingPower,
+        bool isFor,
+        uint32 stakeEndTime
+    );
+
+    event VoteUnpledged(
+        uint256 indexed votingId,
+        uint256 indexed voteId,
+        address indexed voter,
+        uint256 returnedAmount
+    );
+
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     uint256 public votingCount;
     uint256 public voteCount;
@@ -62,15 +95,26 @@ contract VoteTable is AccessControl, ERC721URIStorage, IERC721Receiver {
 
         // Does i need to check votingThreshold is less than some value or it is an admin fault if he sets it to max value?
 
+        uint32 endTime = uint32(block.timestamp + votingDuration);
+        
         votings[votingCount] = Voting({
             description: description,
             powerVotedFor: 0,
             powerVotedAgainst: 0,
-            endTime: uint32(block.timestamp + votingDuration),
+            endTime: endTime,
             votingThreshold: votingThreshold,
             isActive: true,
             result: VotingResult.Pending
         });
+        
+        emit VotingCreated(
+            votingCount,
+            description,
+            votingThreshold,
+            endTime,
+            msg.sender
+        );
+        
         votingCount++;
     }
 
@@ -96,6 +140,13 @@ contract VoteTable is AccessControl, ERC721URIStorage, IERC721Receiver {
         } else {
             voting.result = VotingResult.Failed;
         }
+
+        emit VotingFinalized(
+            votingId,
+            voting.powerVotedFor,
+            voting.powerVotedAgainst,
+            voting.result
+        );
 
         _mintResultNFT(votingId);
     }
@@ -136,13 +187,25 @@ contract VoteTable is AccessControl, ERC721URIStorage, IERC721Receiver {
             voting.powerVotedAgainst += votingPower;
         }
 
+        uint32 stakeEndTime = uint32(block.timestamp + stakeDuration);
+        
         votes[votingId][msg.sender][voteCount] = Vote({
             stakedAmount: amount,
             votingPower: votingPower,
             isFor: isFor,
-            stakeEndTime: uint32(block.timestamp + stakeDuration),
+            stakeEndTime: stakeEndTime,
             isValue: true
         });
+
+        emit VoteCast(
+            votingId,
+            voteCount,
+            msg.sender,
+            amount,
+            votingPower,
+            isFor,
+            stakeEndTime
+        );
 
         voteCount++;
 
@@ -169,6 +232,13 @@ contract VoteTable is AccessControl, ERC721URIStorage, IERC721Receiver {
         vote.stakedAmount = 0;
         vote.votingPower = 0;
 
+        emit VoteUnpledged(
+            votingId,
+            voteId,
+            msg.sender,
+            amountToReturn
+        );
+
         token.safeTransfer(msg.sender, amountToReturn);
     }
 
@@ -179,10 +249,26 @@ contract VoteTable is AccessControl, ERC721URIStorage, IERC721Receiver {
         if (voting.powerVotedFor >= voting.votingThreshold) {
             voting.isActive = false;
             voting.result = VotingResult.Passed;
+            
+            emit VotingFinalized(
+                votingId,
+                voting.powerVotedFor,
+                voting.powerVotedAgainst,
+                voting.result
+            );
+            
             _mintResultNFT(votingId);
         } else if (voting.powerVotedAgainst >= voting.votingThreshold) {
             voting.isActive = false;
             voting.result = VotingResult.Failed;
+            
+            emit VotingFinalized(
+                votingId,
+                voting.powerVotedFor,
+                voting.powerVotedAgainst,
+                voting.result
+            );
+            
             _mintResultNFT(votingId);
         }
     }
