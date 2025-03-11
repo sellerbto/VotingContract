@@ -166,10 +166,8 @@ contract VoteTable is AccessControl, ERC721URIStorage, IERC721Receiver {
             }
         }
 
-        // Mark the vote as unstaked instead of deleting it
         vote.stakedAmount = 0;
         vote.votingPower = 0;
-        // Keep isFor, stakeEndTime, and isValue for historical record
 
         token.safeTransfer(msg.sender, amountToReturn);
     }
