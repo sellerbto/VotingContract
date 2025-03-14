@@ -1,3 +1,5 @@
+deployed contract: https://sepolia.etherscan.io/address/0xf2695bfb1ddd9da0781b5e5290895022192753eb
+
 ## How It Works
 
 1. **Creating a Voting**: An admin creates a voting with a description, threshold, and duration
